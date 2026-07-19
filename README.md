@@ -1,4 +1,5 @@
-# trading-app
+# trading-app gui for creating trades with brackets and automatically calculates share size based on your $ risk setting 
+
 python -m venv tradingapp <br>
 cd tradingapp <br>
 source ./bin/activate <br>
