@@ -1,0 +1,12 @@
+# --- Core API & Authentication Layers ---
+requests>=2.31.0          # Handles token exchange and raw endpoint calls
+python-dotenv>=1.0.1      # Loads TradeStation Client credentials from .env files
+pandas==2.2.2
+
+# --- User Interface & High-Performance Charting ---
+PyQt6>=6.6.0              # Native cross-platform application interface architecture
+pyqtgraph>=0.13.7         # High-velocity vector financial charting engine for candles & lines
+
+# --- Technical Math & Processing Engines ---
+numpy>=1.26.0             # Array manipulations for dynamic data rendering
+pandas>=2.2.0             # Structural data handling for streaming JSON parameters

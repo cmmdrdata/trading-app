@@ -420,36 +420,36 @@ class DashboardScreen(QWidget):
             payload={
               "Type": "OSO",
                 
-              "AccountID": "11281048",
-              "Symbol": "MO",
-              "Quantity": "327",
-              "OrderType": "Limit",
+              "AccountID": account_id,
+              "Symbol": symbol,
+              "Quantity": shares,
+              "OrderType": entry_type,
               "TradeAction": "BUY",
-              "LimitPrice": "74.21",
+              prict_key: entry_price,
               "Route": "Intelligent",
               "TimeInForce": {
                  "Duration": "DAY"
                },
                "Orders": [
                 {
-                  "AccountID": "11281048",
-                  "Symbol": "MO",
-                  "Quantity": "327",
+                  "AccountID": account_id,
+                  "Symbol": symbol,
+                  "Quantity": shares,
                   "OrderType": "Limit",
                   "TradeAction": "SELL",
-                  "LimitPrice": "75.28",
+                  "LimitPrice": profit_target,
                   "Route": "Intelligent",
                   "TimeInForce": {
                     "Duration": "DAY"
                   }
                 },
                 {
-                  "AccountID": "11281048",
-                  "Symbol": "MO",
-                  "Quantity": "327",
+                  "AccountID": account_id,
+                  "Symbol": symbol,
+                  "Quantity": shares,
                   "OrderType": "StopMarket",
                   "TradeAction": "SELL",
-                  "StopPrice": "73.60",
+                  "StopPrice": stop_loss,
                   "Route": "Intelligent",
                   "TimeInForce": {
                     "Duration": "DAY"
@@ -457,56 +457,12 @@ class DashboardScreen(QWidget):
                 }
               ]
             }
-#           payload = {
-#              #"Type": "OSO",
-#            #  "GroupOrderType": "OSO",
-#               "AdvancedOptions": "OCO",
-
-#               "Orders": [
-#                   {
-#                       "AccountID": account_id,
-#                       "Symbol": symbol,
-#                       "Quantity": shares,
-#                       "OrderType": entry_type,      # Dynamic: "StopMarket" or "Limit"
-#                       "TradeAction": "BUY",
-#                       price_key: entry_price,        # Dynamic: "StopPrice" or "LimitPrice"
-#                       "Route": "Intelligent",
-#                       "TimeInForce": {"Duration": "DAY"}
-#                   },
-#                   {
-#                       "GroupOrderType": "OCO",
-#                       "AccountID": account_id,
-#                       "Symbol": symbol,
-#                       "Quantity": shares,
-#                       "OrderType": "Limit",
-#                       "TradeAction": "SELL",
-#                       "LimitPrice": profit_target,
-#                       "Route": "Intelligent",
-#                       "TimeInForce": {"Duration": "DAY"}
-#                   },
-#                   {
-#                       #"Type": "OCO",
-#                       "GroupOrderType": "OCO",
-#                       "AccountID": account_id,
-#                       "Symbol": symbol,
-#                       "Quantity": shares,
-#                       "OrderType": "StopMarket",
-#                       "TradeAction": "SELL",
-#                       "StopPrice": stop_loss,
-#                       "Route": "Intelligent",
-#                       "TimeInForce": {"Duration": "DAY"}
-#                   }
-#               ]
-#           }
 
             # Dispatch routine via standard HTTP client session
             headers = {
                 "Authorization": f"Bearer {self.access_token}",
                 "Content-Type": "application/json"
             }
-            url = "https://api.tradestation.com/v3/brokerage/orders/group"
-            url = "https://api.tradestation.com/v3/orderexecution/ordergroups"
-#           url = "https://api.tradestation.com/v3/ordermanagement/grouporders"
             url = "https://api.tradestation.com/v3/orderexecution/orders"
 
             
