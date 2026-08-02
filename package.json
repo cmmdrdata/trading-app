@@ -1,0 +1,29 @@
+{
+  "name": "trade-app",
+  "version": "1.0.0",
+  "description": "TradeStation & Alpaca Automated Bracket Trading Dashboard",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js",
+    "electron": "electron ."
+  },
+  "keywords": [
+    "tradestation",
+    "alpaca",
+    "trading-dashboard",
+    "express",
+    "electron"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "axios": "^1.7.2",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2"
+  },
+  "devDependencies": {
+    "electron": "^31.2.0",
+    "nodemon": "^3.1.4"
+  }
+}
