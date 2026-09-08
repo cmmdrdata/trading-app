@@ -18,6 +18,7 @@ let tokens = {
 };
 
 let refreshTimer = null;
+let tokenRefreshTimeoutId = null;
 
 // -------------------------------------------------------------------
 // 1. FILE I/O & TOKEN PERSISTENCE
@@ -50,10 +51,10 @@ function loadTokensFromFile() {
 // 2. TOKEN REFRESH LOGIC & TIMER
 // -------------------------------------------------------------------
 async function refreshAccessToken() {
-    console.log('\n[BACKGROUND TIMER] Refreshing TradeStation API token...');
-    
+    console.log('\n[TOKEN REFRESH] Refreshing TradeStation API token...');
+
     if (!tokens.refreshToken) {
-        console.error('[BACKGROUND TIMER ERROR] No refresh token available.');
+        console.error('[TOKEN REFRESH ERROR] No refresh token available.');
         return false;
     }
 
@@ -75,34 +76,42 @@ async function refreshAccessToken() {
         if (response.data.refresh_token) {
             tokens.refreshToken = response.data.refresh_token;
         }
-        
+
         const expiresInMs = response.data.expires_in * 1000;
         tokens.expiresAt = Date.now() + expiresInMs;
 
         saveTokensToFile(tokens);
-        console.log('[BACKGROUND TIMER] Token refreshed successfully!');
-        scheduleBackgroundRefresh();
+        console.log(`[TOKEN REFRESH] Token refreshed successfully. Next refresh in ${Math.round((expiresInMs - REFRESH_LEAD_MS) / 60000)} min.`);
+        scheduleNextRefresh();
         return true;
 
     } catch (err) {
-        console.error('[BACKGROUND TIMER ERROR] Refresh failed:', err.response?.data || err.message);
+        console.error('[TOKEN REFRESH ERROR] Refresh failed:', err.response?.data || err.message);
+        // Retry in 60 seconds on failure instead of giving up
+        console.log('[TOKEN REFRESH] Retrying in 60 seconds...');
+        if (tokenRefreshTimeoutId) clearTimeout(tokenRefreshTimeoutId);
+        tokenRefreshTimeoutId = setTimeout(refreshAccessToken, 60 * 1000);
         return false;
     }
 }
 
-function scheduleBackgroundRefresh() {
-    if (refreshTimer) clearInterval(refreshTimer);
+// Refresh 5 minutes before expiry using a single proactive setTimeout
+const REFRESH_LEAD_MS = 5 * 60 * 1000;
+
+function scheduleNextRefresh() {
+    if (tokenRefreshTimeoutId) clearTimeout(tokenRefreshTimeoutId);
+    if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+
     if (!tokens.expiresAt || !tokens.refreshToken) return;
 
-    const FIVE_MINUTES_MS = 5 * 60 * 1000;
+    const delay = Math.max(tokens.expiresAt - Date.now() - REFRESH_LEAD_MS, 10 * 1000);
+    console.log(`[TOKEN REFRESH] Next refresh scheduled in ${Math.round(delay / 60000)} min.`);
+    tokenRefreshTimeoutId = setTimeout(refreshAccessToken, delay);
+}
 
-    refreshTimer = setInterval(() => {
-        const timeUntilExpiration = tokens.expiresAt - Date.now();
-        if (timeUntilExpiration <= FIVE_MINUTES_MS) {
-            clearInterval(refreshTimer);
-            refreshAccessToken();
-        }
-    }, 10000);
+// Keep the old name as an alias so callers inside the auth code route still work
+function scheduleBackgroundRefresh() {
+    scheduleNextRefresh();
 }
 
 async function initializeTokensOnLaunch() {
@@ -110,14 +119,18 @@ async function initializeTokensOnLaunch() {
     if (!savedTokens || !savedTokens.accessToken) return;
 
     tokens = savedTokens;
-    const FIVE_MINUTES_MS = 5 * 60 * 1000;
     const timeRemaining = tokens.expiresAt - Date.now();
 
     console.log(`[STARTUP] Access Token Loaded. ${Math.round(timeRemaining / 1000)}s remaining.`);
 
-    if (timeRemaining > FIVE_MINUTES_MS) {
-        scheduleBackgroundRefresh();
+    if (timeRemaining > REFRESH_LEAD_MS) {
+        scheduleNextRefresh();
+    } else if (timeRemaining > 0) {
+        // Token still valid but within the lead window — refresh immediately
+        await refreshAccessToken();
     } else {
+        // Token already expired — attempt refresh immediately
+        console.log('[STARTUP] Token expired. Attempting immediate refresh...');
         await refreshAccessToken();
     }
 }
@@ -143,12 +156,12 @@ app.get('/api/equity', async (req, res) => {
             `https://api.tradestation.com/v3/brokerage/accounts/${accountId}/balances`,
             { headers: { Authorization: `Bearer ${tokens.accessToken}` } }
         );
-        
+
         const balances = response.data.Balances?.[0] || response.data;
         const buyingPower = parseFloat(
-            balances?.DayTradingBuyingPower || 
-            balances?.BuyingPower || 
-            balances?.CashBalance || 
+            balances?.DayTradingBuyingPower ||
+            balances?.BuyingPower ||
+            balances?.CashBalance ||
             10000
         );
 
@@ -161,7 +174,15 @@ app.get('/api/equity', async (req, res) => {
 app.get('/api/token', (req, res) => {
     res.json({
         token: tokens.accessToken,
-        accountId: process.env.ACCOUNT_ID
+        accountId: process.env.ACCOUNT_ID,
+        expiresAt: tokens.expiresAt || null
+    });
+});
+
+app.get('/api/config', (req, res) => {
+    res.json({
+        alpacaApiKey:    process.env.ALPACA_API_KEY,
+        alpacaApiSecret: process.env.ALPACA_API_SECRET
     });
 });
 
@@ -227,19 +248,19 @@ app.get('/', async (req, res) => {
             input { background: #0f1115; border: 1px solid #363b44; color: #fff; padding: 10px; border-radius: 4px; width: 100%; box-sizing: border-box; font-size: 14px; }
             button { cursor: pointer; border: none; border-radius: 4px; font-weight: bold; padding: 10px 15px; transition: all 0.2s ease; }
             .btn-primary { background: #2563eb; color: white; }
-            
-            .btn-hl { 
-                background: #2a2e37; 
-                color: #858b98; 
-                padding: 10px 20px; 
-                font-weight: bold; 
-                border: 1px solid #363b44; 
+
+            .btn-hl {
+                background: #2a2e37;
+                color: #858b98;
+                padding: 10px 20px;
+                font-weight: bold;
+                border: 1px solid #363b44;
                 opacity: 0.6;
             }
-            .btn-hl.active { 
-                background: #f59e0b; 
-                color: #000; 
-                opacity: 1; 
+            .btn-hl.active {
+                background: #f59e0b;
+                color: #000;
+                opacity: 1;
                 border-color: #f59e0b;
                 box-shadow: 0 0 10px rgba(245, 158, 11, 0.4);
             }
@@ -323,20 +344,18 @@ app.get('/', async (req, res) => {
 
             <!-- Take Profit Field -->
             <div class="form-group">
-                <label>Take Profit ($) [Target 2:1]</label>
+                <label>Take Profit ($) </label>
                 <input type="number" step="0.01" id="takeProfit">
             </div>
 
             <!-- Price Inputs -->
-            <div class="row">
-                <div class="form-group" style="flex:1;">
-                    <label>Entry Price ($)</label>
-                    <input type="number" step="0.01" id="entryPrice" oninput="onEntryOrStopChange()">
-                </div>
-                <div class="form-group" style="flex:1;">
-                    <label>Stop Loss Price ($)</label>
-                    <input type="number" step="0.01" id="stopLoss" oninput="onEntryOrStopChange()">
-                </div>
+            <div class="form-group">
+                <label>Entry Price ($)</label>
+                <input type="number" step="0.01" id="entryPrice" oninput="onEntryOrStopChange()">
+            </div>
+            <div class="form-group">
+                <label>Stop Loss Price ($)</label>
+                <input type="number" step="0.01" id="stopLoss" oninput="onEntryOrStopChange()">
             </div>
 
             <!-- Risk Multipliers -->
@@ -383,12 +402,12 @@ app.get('/', async (req, res) => {
             var currentSide = 'BUY';
             var orderType = 'LIMIT';
 
-            // --- Alpaca Config Integration ---
+            // --- Alpaca Config — loaded from server via /api/config (no hardcoded secrets) ---
             const ALPACA_CONFIG = {
-                API_KEY: 'PKDB252AMB24ONWEO37E67MQH7',
-                API_SECRET: '8pyXTnSwwMrh2j3dSc8WaxmXJesm1SC7kkF2CrD8hxfu',
-                WS_URL: 'wss://stream.data.alpaca.markets/v2/iex',
-                REST_URL: 'https://data.alpaca.markets/v2'
+                API_KEY:    '',
+                API_SECRET: '',
+                WS_URL:     'wss://stream.data.alpaca.markets/v2/iex',
+                REST_URL:   'https://data.alpaca.markets/v2'
             };
 
             let alpacaSocket = null;
@@ -397,6 +416,7 @@ app.get('/', async (req, res) => {
             let currentDayLow = 0;
             let isInitialLoad = true;
             let isHlActive = false;
+            let snapshotRefreshTimer = null;
 
             // --- Reset Helper ---
             function resetControlsToDefault() {
@@ -426,18 +446,37 @@ app.get('/', async (req, res) => {
                 } catch(e) { return null; }
             }
 
+            // Refresh the official daily high/low from Alpaca snapshot every 60 s
+            function startSnapshotRefresh(symbol) {
+                if (snapshotRefreshTimer) clearInterval(snapshotRefreshTimer);
+                snapshotRefreshTimer = setInterval(async () => {
+                    const snap = await fetchAlpacaSnapshot(symbol);
+                    if (snap) {
+                        // Always trust the official bar for high/low
+                        if (snap.dayHigh > currentDayHigh) currentDayHigh = snap.dayHigh;
+                        if (snap.dayLow  > 0 && (snap.dayLow < currentDayLow || currentDayLow === 0)) currentDayLow = snap.dayLow;
+                        document.getElementById('dispHigh').innerText = '$' + currentDayHigh.toFixed(2);
+                        document.getElementById('dispLow').innerText  = '$' + currentDayLow.toFixed(2);
+                    }
+                }, 60000);
+            }
+
             async function connectAlpacaRealtimeWithHighLow(symbol) {
                 const formattedSymbol = symbol.toUpperCase();
                 isInitialLoad = true;
 
                 resetControlsToDefault();
 
+                // Seed high/low from snapshot immediately
                 const snapshot = await fetchAlpacaSnapshot(formattedSymbol);
                 if (snapshot) {
                     currentDayHigh = snapshot.dayHigh;
-                    currentDayLow = snapshot.dayLow;
+                    currentDayLow  = snapshot.dayLow;
                     updateTickUI(snapshot.currentPrice, currentDayHigh, currentDayLow);
                 }
+
+                // Keep high/low current via periodic snapshot re-fetch
+                startSnapshotRefresh(formattedSymbol);
 
                 if (alpacaSocket && alpacaSocket.readyState === WebSocket.OPEN) {
                     subscribeAlpacaSymbol(formattedSymbol);
@@ -455,12 +494,24 @@ app.get('/', async (req, res) => {
                         if (msg.T === 'success' && msg.msg === 'authenticated') {
                             subscribeAlpacaSymbol(formattedSymbol);
                         }
+                        // Live trade tick — update current price and track intraday extremes
                         if (msg.T === 't' || msg.T === 'q') {
                             const livePrice = parseFloat(msg.p || msg.bp || 0);
                             if (livePrice > 0) {
-                                if (livePrice > currentDayHigh || currentDayHigh === 0) currentDayHigh = livePrice;
-                                if (livePrice < currentDayLow || currentDayLow === 0) currentDayLow = livePrice;
+                                if (livePrice > currentDayHigh) currentDayHigh = livePrice;
+                                if (currentDayLow === 0 || livePrice < currentDayLow) currentDayLow = livePrice;
                                 updateTickUI(livePrice, currentDayHigh, currentDayLow);
+                            }
+                        }
+                        // Daily bar update — Alpaca pushes 'b' (bar) messages with official OHLC
+                        if (msg.T === 'b') {
+                            if (msg.h && msg.h > currentDayHigh) {
+                                currentDayHigh = parseFloat(msg.h);
+                                document.getElementById('dispHigh').innerText = '$' + currentDayHigh.toFixed(2);
+                            }
+                            if (msg.l && (currentDayLow === 0 || parseFloat(msg.l) < currentDayLow)) {
+                                currentDayLow = parseFloat(msg.l);
+                                document.getElementById('dispLow').innerText = '$' + currentDayLow.toFixed(2);
                             }
                         }
                     });
@@ -469,9 +520,10 @@ app.get('/', async (req, res) => {
 
             function subscribeAlpacaSymbol(newSymbol) {
                 if (currentSubscribedSymbol) {
-                    alpacaSocket.send(JSON.stringify({ action: 'unsubscribe', quotes: [currentSubscribedSymbol] }));
+                    alpacaSocket.send(JSON.stringify({ action: 'unsubscribe', quotes: [currentSubscribedSymbol], bars: [currentSubscribedSymbol] }));
                 }
-                alpacaSocket.send(JSON.stringify({ action: 'subscribe', quotes: [newSymbol] }));
+                // Subscribe to both quotes (for live price) and bars (for official H/L updates)
+                alpacaSocket.send(JSON.stringify({ action: 'subscribe', quotes: [newSymbol], bars: [newSymbol] }));
                 currentSubscribedSymbol = newSymbol;
             }
 
@@ -547,7 +599,7 @@ app.get('/', async (req, res) => {
             function updateTakeProfit() {
                 const entry = parseFloat(document.getElementById('entryPrice').value) || 0;
                 const stop = parseFloat(document.getElementById('stopLoss').value) || 0;
-                
+
                 const target = (2 * entry) - stop;
                 document.getElementById('takeProfit').value = target > 0 ? target.toFixed(2) : '0.00';
             }
@@ -564,6 +616,7 @@ app.get('/', async (req, res) => {
                 }
                 return 1.0;
             }
+
 
             function calculatePositionSize() {
                 const entry = parseFloat(document.getElementById('entryPrice').value) || 0;
@@ -606,17 +659,6 @@ app.get('/', async (req, res) => {
                 calculatePositionSize();
             }
 
-            async function loadTradeStationCredentials() {
-                try {
-                    const res = await fetch('/api/token');
-                    const data = await res.json();
-                    tradeStationToken = data.token;
-                    CONFIG.ACCOUNT_ID = data.accountId;
-                } catch(e) {
-                    console.error('Failed to fetch TradeStation credentials', e);
-                }
-            }
-
             // Handler called on BUY or SELL button click
             async function handleTradeAction(side) {
                 currentSide = side;
@@ -627,9 +669,19 @@ app.get('/', async (req, res) => {
                 }
             }
 
-            // Initialization
+            // Initialization — token management is handled by initClientToken() in trading.js
             window.onload = async () => {
-                await loadTradeStationCredentials();
+                // Load Alpaca keys from server (kept in .env, never hardcoded)
+                try {
+                    const cfgRes = await fetch('/api/config');
+                    const cfg = await cfgRes.json();
+                    ALPACA_CONFIG.API_KEY    = cfg.alpacaApiKey    || '';
+                    ALPACA_CONFIG.API_SECRET = cfg.alpacaApiSecret || '';
+                } catch(e) {
+                    console.error('Failed to load Alpaca config', e);
+                }
+
+                await initClientToken();   // sets tradeStationToken + schedules auto-refresh
                 await loadAccountEquity();
                 changeSymbol();
             };
@@ -638,9 +690,92 @@ app.get('/', async (req, res) => {
     </html>
     `);
 });
+// -------------------------------------------------------------------
+// ROUTE: INCOMING TRADE MODAL TRIGGER
+// -------------------------------------------------------------------
+app.post('/api/trade-modal', async (req, res) => {
+    // 1. Check Authentication
+    if (!tokens.accessToken) {
+        return res.status(401).json({ error: 'TradeStation not authenticated on server.' });
+    }
+
+    // 2. Extract Body Parameters
+    const { Symbol, EntryPrice, StopLoss } = req.body;
+
+    if (!Symbol || !EntryPrice || !StopLoss) {
+        return res.status(400).json({ error: 'Missing required parameters: Symbol, EntryPrice, or StopLoss.' });
+    }
+
+    // 3. Compute Default Take Profit (2:1 Ratio matching frontend logic)
+    const entry = parseFloat(EntryPrice);
+    const stop = parseFloat(StopLoss);
+    const profitTarget = (2 * entry) - stop;
+
+    // 4. Construct OSO Order Payload
+    const payload = {
+        Type: "OSO",
+        AccountID: process.env.ACCOUNT_ID,
+        Symbol: Symbol.toUpperCase(),
+        Quantity: "100", // Set or compute your target share quantity
+        OrderType: "Limit",
+        TradeAction: "BUY",
+        LimitPrice: entry.toFixed(2),
+        Route: "Intelligent",
+        TimeInForce: { Duration: "DAY" },
+        OSOs: [
+            {
+                Type: "BRK",
+                Orders: [
+                    {
+                        AccountID: process.env.ACCOUNT_ID,
+                        Symbol: Symbol.toUpperCase(),
+                        Quantity: "100",
+                        OrderType: "Limit",
+                        TradeAction: "SELL",
+                        LimitPrice: profitTarget.toFixed(2),
+                        Route: "Intelligent",
+                        TimeInForce: { Duration: "DAY" }
+                    },
+                    {
+                        AccountID: process.env.ACCOUNT_ID,
+                        Symbol: Symbol.toUpperCase(),
+                        Quantity: "100",
+                        OrderType: "StopMarket",
+                        TradeAction: "SELL",
+                        StopPrice: stop.toFixed(2),
+                        Route: "Intelligent",
+                        TimeInForce: { Duration: "DAY" }
+                    }
+                ]
+            }
+        ]
+    };
+
+    // 5. Send Order directly to TradeStation
+    try {
+        const response = await axios.post(
+            'https://api.tradestation.com/v3/orderexecution/orders',
+            payload,
+            {
+                headers: {
+                    'Authorization': `Bearer ${tokens.accessToken}`,
+                    'Content-Type': 'application/json'
+                }
+            }
+        );
+
+        return res.json({ success: true, data: response.data });
+    } catch (err) {
+        console.error('[API TRADE ERROR]:', err.response?.data || err.message);
+        return res.status(500).json({
+            error: 'Order execution failed',
+            details: err.response?.data || err.message
+        });
+    }
+});
 
 // Start Express and initialize tokens
-app.listen(PORT, async () => {
+app.listen(PORT, '0.0.0.0', async () => {
     console.log(`\nServer running on http://localhost:${PORT}`);
     await initializeTokensOnLaunch();
 });
