@@ -1,0 +1,30 @@
+# Environment & secrets
+.env
+.env.*
+
+# Auth tokens (contain live access/refresh tokens)
+.token
+
+# SQLite database files
+*.db
+*.db-shm
+*.db-wal
+
+# Order response log dumps
+order-response-*.txt
+
+# Trading notes / scratch files
+trading.txt
+
+# Node dependencies
+node_modules/
+
+# macOS
+.DS_Store
+
+# Backup / work-in-progress folders
+bak/
+Fixed-Order-Parsing/
+fixed-add-entry-pl-calculation/
+Sep25-12:14/
+Sep25-13:53/
