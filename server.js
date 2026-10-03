@@ -3,6 +3,7 @@ const express = require('express');
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
+const { generateTradeChart } = require('./trade-chart');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -841,12 +842,47 @@ app.post('/api/trade-modal', async (req, res) => {
             }
         );
 
+        // Log TradingView-triggered order to order-response file
+        const tvTimestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const tvFilename  = path.join(ORDER_RESPONSES_DIR, `order-response_${Symbol.toUpperCase()}_TRADINGVIEW-${tvTimestamp}.txt`);
+        const tvContent = [
+            `Logged at: ${new Date().toISOString()}`,
+            `Symbol: ${Symbol.toUpperCase()}`,
+            `Label: TRADINGVIEW`,
+            '='.repeat(60),
+            'Submitted payload:',
+            JSON.stringify(payload, null, 2),
+            '',
+            'TradeStation response:',
+            JSON.stringify(response.data, null, 2)
+        ].join('\n');
+        try { fs.writeFileSync(tvFilename, tvContent, 'utf-8'); } catch (_) {}
+
         return res.json({ success: true, data: response.data });
     } catch (err) {
         console.error('[API TRADE ERROR]:', err.response?.data || err.message);
-        return res.status(500).json({ 
-            error: 'Order execution failed', 
-            details: err.response?.data || err.message 
+
+        // Log failed TradingView order too
+        try {
+            const tvTimestamp = new Date().toISOString().replace(/[:.]/g, '-');
+            const tvFilename  = path.join(ORDER_RESPONSES_DIR, `order-response_${Symbol.toUpperCase()}_TRADINGVIEW_ERROR-${tvTimestamp}.txt`);
+            const tvContent = [
+                `Logged at: ${new Date().toISOString()}`,
+                `Symbol: ${Symbol.toUpperCase()}`,
+                `Label: TRADINGVIEW_ERROR`,
+                '='.repeat(60),
+                'Submitted payload:',
+                JSON.stringify(payload, null, 2),
+                '',
+                'Error:',
+                JSON.stringify(err.response?.data || err.message, null, 2)
+            ].join('\n');
+            fs.writeFileSync(tvFilename, tvContent, 'utf-8');
+        } catch (_) {}
+
+        return res.status(500).json({
+            error: 'Order execution failed',
+            details: err.response?.data || err.message
         });
     }
 });
@@ -856,20 +892,27 @@ app.post('/api/trade-modal', async (req, res) => {
 // Lets us inspect the exact shape of OSO/bracket responses so that
 // child-order parsing can be tuned to match reality.
 // -------------------------------------------------------------------
+const ORDER_RESPONSES_DIR = path.join(__dirname, 'order-responses');
+if (!fs.existsSync(ORDER_RESPONSES_DIR)) fs.mkdirSync(ORDER_RESPONSES_DIR);
+
 app.post('/api/log-order-response', (req, res) => {
-    const payload = req.body;
+    const { symbol, label, request: reqPayload, response: respPayload } = req.body;
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const filename  = path.join(__dirname, `order-response-${timestamp}.txt`);
+    const tickerPart = symbol ? `_${symbol.toUpperCase()}` : '';
+    const labelPart  = label  ? `_${label}` : '';
+    const filename   = path.join(ORDER_RESPONSES_DIR, `order-response${tickerPart}${labelPart}-${timestamp}.txt`);
 
     const content = [
         `Logged at: ${new Date().toISOString()}`,
+        symbol ? `Symbol: ${symbol.toUpperCase()}` : '',
+        label  ? `Label: ${label}` : '',
         '='.repeat(60),
         'Submitted payload:',
-        JSON.stringify(payload.request, null, 2),
+        JSON.stringify(reqPayload, null, 2),
         '',
         'TradeStation response:',
-        JSON.stringify(payload.response, null, 2)
-    ].join('\n');
+        JSON.stringify(respPayload, null, 2)
+    ].filter(line => line !== '').join('\n');
 
     try {
         fs.writeFileSync(filename, content, 'utf-8');
@@ -877,6 +920,86 @@ app.post('/api/log-order-response', (req, res) => {
         res.json({ ok: true, file: filename });
     } catch (err) {
         console.error('[ORDER LOG] Failed to write file:', err.message);
+        res.status(500).json({ ok: false, error: err.message });
+    }
+});
+
+// Append a final status summary line to the matching order-response file.
+// The client sends { orderId, symbol, summary } — we find the file whose
+// TradeStation response contains that orderId and append the summary.
+app.post('/api/log-order-status', (req, res) => {
+    const { orderId, symbol, summary } = req.body || {};
+    if (!orderId || !summary) return res.status(400).json({ ok: false, error: 'orderId and summary required' });
+
+    let matched = null;
+    try {
+        const files = fs.readdirSync(ORDER_RESPONSES_DIR)
+            .filter(f => f.startsWith('order-response') && f.endsWith('.txt'))
+            .sort()
+            .reverse(); // newest first — the most recent file is most likely the right one
+
+        for (const f of files) {
+            const fullPath = path.join(ORDER_RESPONSES_DIR, f);
+            const text = fs.readFileSync(fullPath, 'utf-8');
+            if (text.includes(orderId)) { matched = fullPath; break; }
+        }
+
+        if (!matched) {
+            console.warn(`[ORDER STATUS] No file found containing orderId ${orderId}`);
+            return res.json({ ok: false, note: 'no matching file found' });
+        }
+
+        const line = `\n\n{ "Final status": "${summary}"\n`;
+        fs.appendFileSync(matched, line, 'utf-8');
+        console.log(`[ORDER STATUS] Appended to ${matched}: ${summary}`);
+        res.json({ ok: true, file: matched });
+    } catch (err) {
+        console.error('[ORDER STATUS] Error:', err.message);
+        res.status(500).json({ ok: false, error: err.message });
+    }
+});
+
+// -------------------------------------------------------------------
+// ROUTE: GENERATE TRADE CHART PNG
+// Called by the browser when a position exits.  Fetches Alpaca 2-min
+// bars, draws a candlestick chart with entry/exit markers, and saves
+// it to the order-responses directory.
+// -------------------------------------------------------------------
+app.post('/api/generate-trade-chart', async (req, res) => {
+    const {
+        symbol, side, entryPrice, fillPrice, stopLoss, profitTarget,
+        exitPrice, exitReason, shares,
+        entryTime, exitTime,
+        partialSells
+    } = req.body || {};
+
+    if (!symbol || !entryTime) {
+        return res.status(400).json({ ok: false, error: 'symbol and entryTime required' });
+    }
+
+    try {
+        const filePath = await generateTradeChart({
+            symbol:       symbol.toUpperCase(),
+            side:         side || 'BUY',
+            entryPrice:   parseFloat(entryPrice)   || 0,
+            fillPrice:    parseFloat(fillPrice)     || parseFloat(entryPrice) || 0,
+            stopLoss:     parseFloat(stopLoss)      || 0,
+            profitTarget: parseFloat(profitTarget)  || 0,
+            exitPrice:    parseFloat(exitPrice)     || 0,
+            exitReason:   exitReason || 'terminated',
+            shares:       parseInt(shares)          || 0,
+            entryTime:    parseInt(entryTime),
+            exitTime:     parseInt(exitTime)        || Date.now(),
+            partialSells: partialSells || [],
+            alpacaKey:    process.env.ALPACA_API_KEY,
+            alpacaSecret: process.env.ALPACA_API_SECRET,
+            outputDir:    ORDER_RESPONSES_DIR
+        });
+
+        console.log(`[CHART] Generated: ${filePath}`);
+        res.json({ ok: true, file: filePath });
+    } catch (err) {
+        console.error('[CHART] Generation failed:', err.message);
         res.status(500).json({ ok: false, error: err.message });
     }
 });

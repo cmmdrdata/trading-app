@@ -221,7 +221,7 @@ async function executeOrder() {
         fetch('/api/log-order-response', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ request: payload, response: data })
+            body: JSON.stringify({ symbol, request: payload, response: data })
         }).catch(() => {}); // fire-and-forget; never block the order flow
 
         const orderList = data.Orders || (Array.isArray(data) ? data : []);
@@ -443,12 +443,13 @@ function openOrderMonitorPanel(tradeDetails) {
                         <tr>
                             <th style="padding:7px 8px;text-align:left;">Role</th>
                             <th style="padding:7px 8px;text-align:left;">Order ID</th>
+                            <th style="padding:7px 8px;text-align:left;">Shares</th>
                             <th style="padding:7px 8px;text-align:left;">Price</th>
                             <th style="padding:7px 8px;text-align:left;">Status</th>
                         </tr>
                     </thead>
                     <tbody id="${panelId}_tbody">
-                        <tr><td colspan="4" style="padding:10px;text-align:center;color:#94a3b8;">Fetching order status…</td></tr>
+                        <tr><td colspan="5" style="padding:10px;text-align:center;color:#94a3b8;">Fetching order status…</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -496,6 +497,28 @@ function openOrderMonitorPanel(tradeDetails) {
                 </div>
             </div>
 
+            <!-- Partial Limit Sell -->
+            <div style="background:#0f1115;padding:12px;border-radius:6px;margin-bottom:12px;border:1px solid #2d3139;">
+                <div style="font-size:12px;font-weight:bold;color:#facc15;margin-bottom:8px;">Partial Limit Sell (keep rest in stop)</div>
+                <div style="display:flex;gap:10px;align-items:flex-end;">
+                    <div style="flex:1;">
+                        <label style="font-size:11px;color:#94a3b8;display:block;">Sell Shares (n)</label>
+                        <input type="number" id="${panelId}_partialQtyInput" min="1" step="1" value="1"
+                               style="width:100%;padding:6px;background:#1a1d24;border:1px solid #363b44;color:#fff;border-radius:4px;font-size:12px;">
+                    </div>
+                    <div style="flex:1;">
+                        <label style="font-size:11px;color:#94a3b8;display:block;">Limit Price ($)</label>
+                        <input type="number" id="${panelId}_partialPriceInput" step="0.01" value="${tradeDetails.profitTarget.toFixed(2)}"
+                               style="width:100%;padding:6px;background:#1a1d24;border:1px solid #363b44;color:#fff;border-radius:4px;font-size:12px;">
+                    </div>
+                    <button onclick="sellPartialAtLimit('${panelId}','${stateKey}')"
+                            style="padding:6px 12px;background:#7c3aed;color:#fff;font-weight:bold;border:none;border-radius:4px;cursor:pointer;font-size:12px;white-space:nowrap;">
+                        Sell n / Keep Rest
+                    </button>
+                </div>
+                <div id="${panelId}_partialStatus" style="margin-top:6px;font-size:11px;color:#94a3b8;"></div>
+            </div>
+
             <!-- Action Row -->
             <div style="display:flex;gap:10px;">
                 <button onclick="cancelAllPanelOrders('${panelId}','${stateKey}')"
@@ -526,10 +549,6 @@ function minimizePanel(panelId, stateKey) {
     if (!panel) return;
     // Hide panel completely — the taskbar tab is how you get it back
     panel.style.display = 'none';
-
-    // Update the taskbar tab to show a "restore" indicator
-    const tab = document.getElementById(`${panelId}_tab`);
-    if (tab) tab.style.background = '#1e3a5f';
 }
 
 function restorePanel(panelId) {
@@ -537,14 +556,49 @@ function restorePanel(panelId) {
     if (!panel) return;
     panel.style.display = '';
     _bringPanelToFront(panelId);
-
-    const tab = document.getElementById(`${panelId}_tab`);
-    if (tab) tab.style.background = '#1e293b';
 }
 
 // -------------------------------------------------------------------
 // 3b. TASKBAR TAB MANAGEMENT
 // -------------------------------------------------------------------
+
+// Tab colour scheme:
+//   monitoring (pending entry) : #1e293b  bg, #94a3b8 text
+//   in position (entry filled) : #78350f  bg, #fbbf24 text  (amber — live trade)
+//   target hit                 : #14532d  bg, #4ade80 text  (green)
+//   stopped out                : #450a0a  bg, #f87171 text  (red)
+//   terminated / all done      : #1f2937  bg, #6b7280 text  (grey)
+function _updateTabColor(panelId, stateKey) {
+    const state = window[stateKey];
+    const tab   = document.getElementById(`${panelId}_tab`);
+    if (!tab) return;
+
+    let bg, color, label;
+
+    if (!state) {
+        bg = '#1f2937'; color = '#6b7280'; label = null;
+    } else if (state.tpFilled) {
+        bg = '#14532d'; color = '#4ade80'; label = '🎯';
+    } else if (state.stopFilled) {
+        bg = '#450a0a'; color = '#f87171'; label = '🛑';
+    } else if (state.positionExited) {
+        bg = '#1f2937'; color = '#6b7280'; label = '—';
+    } else if (state.entryFilled) {
+        bg = '#78350f'; color = '#fbbf24'; label = '●';
+    } else {
+        bg = '#1e293b'; color = '#94a3b8'; label = null;
+    }
+
+    tab.style.background = bg;
+    tab.style.color      = color;
+    tab.style.border     = `1px solid ${color}44`;
+
+    // Prepend a status indicator to the symbol text
+    if (label !== null) {
+        tab.innerText = `${label} ${state ? state.symbol : ''}`;
+    }
+}
+
 function _addTaskbarTab(panelId, stateKey, symbol, side) {
     const bar = _ensureTaskbar();
 
@@ -553,17 +607,18 @@ function _addTaskbarTab(panelId, stateKey, symbol, side) {
     tab.title = `${symbol} (${side}) — click to restore`;
     tab.style.cssText = [
         'background:#1e293b',
-        'color:#e2e8f0',
-        'border:1px solid #363b44',
+        'color:#94a3b8',
+        'border:1px solid #363b4444',
         'border-radius:4px',
         'padding:4px 12px',
         'font-size:12px',
         'font-weight:bold',
         'cursor:pointer',
         'white-space:nowrap',
-        'max-width:120px',
+        'max-width:140px',
         'overflow:hidden',
-        'text-overflow:ellipsis'
+        'text-overflow:ellipsis',
+        'transition:background 0.3s,color 0.3s,border-color 0.3s'
     ].join(';');
     tab.innerText = symbol;
     tab.onclick = () => restorePanel(panelId);
@@ -797,7 +852,8 @@ async function updatePanelMonitor(panelId, stateKey) {
             // Detect entry fill
             if (o.OrderID === entryOrderId && (status === 'Filled' || status === 'Fills')) {
                 if (!state.entryFilled) {
-                    state.entryFilled = true;
+                    state.entryFilled  = true;
+                    state.entryFillTime = Date.now();
                     state.fillPrice = parseFloat(o.FilledPrice || o.AverageFillPrice || state.entryPrice);
 
                     // Hide the "Modify Entry" section — order is filled
@@ -812,6 +868,7 @@ async function updatePanelMonitor(panelId, stateKey) {
                     }
 
                     playTradeAudio('fill');
+                    _updateTabColor(panelId, stateKey);
                 }
             }
 
@@ -822,6 +879,7 @@ async function updatePanelMonitor(panelId, stateKey) {
                     state.positionExited = true;
                     playTradeAudio('target');
                     _onPositionExited(panelId, stateKey, 'target');
+                    _updateTabColor(panelId, stateKey);
                 }
             }
 
@@ -832,6 +890,7 @@ async function updatePanelMonitor(panelId, stateKey) {
                     state.positionExited = true;
                     playTradeAudio('stop');
                     _onPositionExited(panelId, stateKey, 'stop');
+                    _updateTabColor(panelId, stateKey);
                 }
             }
 
@@ -862,17 +921,21 @@ async function updatePanelMonitor(panelId, stateKey) {
                 roleColor = o.StopPrice && !o.LimitPrice ? '#f87171' : '#4ade80';
             }
 
+            // Show filled quantity when available, otherwise ordered quantity
+            const filledQty = o.FilledQuantity || o.QuantityFilled || o.CumulativeQuantity;
+            const sharesStr = filledQty ? `${filledQty}/${o.Quantity || '?'}` : (o.Quantity || '—');
             tableRowsHTML += `
                 <tr style="border-bottom:1px solid #2d3139;">
                     <td style="padding:6px 8px;font-weight:bold;color:${roleColor};white-space:nowrap;">${roleLabel}</td>
                     <td style="padding:6px 8px;font-family:monospace;font-size:11px;">${o.OrderID}</td>
+                    <td style="padding:6px 8px;">${sharesStr}</td>
                     <td style="padding:6px 8px;">${priceStr}</td>
                     <td style="padding:6px 8px;font-weight:bold;color:${getStatusColor(status)}">${status}</td>
                 </tr>`;
         });
 
         const tbody = document.getElementById(`${panelId}_tbody`);
-        if (tbody) tbody.innerHTML = tableRowsHTML || '<tr><td colspan="4" style="padding:10px;text-align:center;color:#94a3b8;">No orders returned.</td></tr>';
+        if (tbody) tbody.innerHTML = tableRowsHTML || '<tr><td colspan="5" style="padding:10px;text-align:center;color:#94a3b8;">No orders returned.</td></tr>';
 
         // Stop polling when all orders reach terminal state
         if (orders.length > 0 && activeCount === 0) {
@@ -887,6 +950,7 @@ async function updatePanelMonitor(panelId, stateKey) {
                 badge.style.background = '#374151';
                 badge.style.color      = '#94a3b8';
             }
+            _updateTabColor(panelId, stateKey);
         }
     } catch (err) {
         console.error(`[Monitor ${panelId}] Error polling order status:`, err);
@@ -896,6 +960,8 @@ async function updatePanelMonitor(panelId, stateKey) {
 // Called once when a position exit is detected (TP fill, stop fill, or all-terminated).
 // Freezes the P/L display at its last value and disables the cancel button.
 function _onPositionExited(panelId, stateKey, reason) {
+    const state = window[stateKey];
+
     // Disable the Cancel All button
     const panel = document.getElementById(panelId);
     if (panel) {
@@ -927,6 +993,58 @@ function _onPositionExited(panelId, stateKey, reason) {
             badge.style.color      = '#f87171';
         }
         // 'terminated' leaves the existing badge text set by the caller
+    }
+
+    // Append final status summary to the order-response log file
+    if (state) {
+        const exitPrice = state.latestAlpacaPrice || state.fillPrice || 0;
+        const fillPrice = state.fillPrice || state.entryPrice || 0;
+        const { shares, side, symbol, entryOrderId } = state;
+
+        let exitLabel;
+        if (reason === 'target')     exitLabel = 'target reached';
+        else if (reason === 'stop')  exitLabel = 'stopped';
+        else                         exitLabel = 'terminated';
+
+        let plText = '';
+        if (fillPrice > 0 && exitPrice > 0 && shares > 0) {
+            const diff    = (side === 'BUY') ? (exitPrice - fillPrice) : (fillPrice - exitPrice);
+            const totalPL = diff * shares;
+            const sign    = totalPL >= 0 ? '+' : '';
+            plText = ` for a ${totalPL >= 0 ? 'gain' : 'loss'} of ${sign}$${totalPL.toFixed(2)}`;
+        }
+
+        const summary = exitPrice > 0
+            ? `${exitLabel} at $${exitPrice.toFixed(2)}${plText}`
+            : exitLabel;
+
+        fetch('/api/log-order-status', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ orderId: entryOrderId, symbol, summary })
+        }).catch(() => {});
+
+        // Generate trade chart PNG — fire-and-forget
+        fetch('/api/generate-trade-chart', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                symbol,
+                side,
+                entryPrice:   state.entryPrice,
+                fillPrice:    state.fillPrice,
+                stopLoss:     state.stopLoss,
+                profitTarget: state.profitTarget,
+                exitPrice:    exitPrice,
+                exitReason:   reason,
+                shares,
+                entryTime:    state.entryFillTime || (Date.now() - 30 * 60 * 1000),
+                exitTime:     Date.now(),
+                partialSells: state.partialSells || []
+            })
+        }).then(r => r.json()).then(d => {
+            if (d.ok) console.log(`[TradeChart] Saved: ${d.file}`);
+        }).catch(() => {});
     }
 }
 
@@ -1058,7 +1176,118 @@ async function modifyBracketLeg(panelId, stateKey, type) {
 }
 
 // -------------------------------------------------------------------
-// 12. CANCEL ALL ORDERS FOR A PANEL
+// 12. PARTIAL LIMIT SELL — sell n shares at limit, shrink stop to m-n shares
+// -------------------------------------------------------------------
+async function sellPartialAtLimit(panelId, stateKey) {
+    const state = window[stateKey];
+    if (!state) return;
+
+    const statusEl = document.getElementById(`${panelId}_partialStatus`);
+    const setStatus = (msg, color = '#94a3b8') => { if (statusEl) { statusEl.innerText = msg; statusEl.style.color = color; } };
+
+    const n = parseInt(document.getElementById(`${panelId}_partialQtyInput`)?.value);
+    const limitPrice = parseFloat(document.getElementById(`${panelId}_partialPriceInput`)?.value);
+
+    if (!n || n <= 0 || !limitPrice || limitPrice <= 0) {
+        setStatus('Enter a valid share count and limit price.', '#f87171');
+        return;
+    }
+
+    const totalShares = state.shares;
+    const remaining   = totalShares - n;
+
+    if (n >= totalShares) {
+        setStatus(`n (${n}) must be less than total shares (${totalShares}).`, '#f87171');
+        return;
+    }
+
+    const stopOrder = state.stopOrderId ? state.ordersMap[state.stopOrderId] : null;
+    if (!stopOrder) {
+        setStatus('Stop order not yet resolved — wait a moment.', '#f87171');
+        return;
+    }
+
+    const exitAction = (state.side === 'BUY') ? 'SELL' : 'BUYTOCOVER';
+
+    setStatus('Placing partial limit order…');
+
+    // 1. Place a new standalone limit sell for n shares
+    try {
+        const limitPayload = {
+            AccountID: CONFIG.ACCOUNT_ID,
+            Symbol:    state.symbol,
+            Quantity:  n.toString(),
+            OrderType: 'Limit',
+            TradeAction: exitAction,
+            LimitPrice:  limitPrice.toFixed(2),
+            Route: 'Intelligent',
+            TimeInForce: { Duration: 'DAY' }
+        };
+
+        const limitRes = await fetch('https://api.tradestation.com/v3/orderexecution/orders', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${tradeStationToken}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(limitPayload)
+        });
+        const limitData = await limitRes.json();
+
+        // Log partial sell to order-response file
+        fetch('/api/log-order-response', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ symbol: state.symbol, label: 'PARTIAL_SELL', request: limitPayload, response: limitData })
+        }).catch(() => {});
+
+        if (!limitRes.ok) {
+            setStatus(`Limit order failed: ${limitData.Message || JSON.stringify(limitData)}`, '#f87171');
+            return;
+        }
+
+        setStatus(`Limit order placed for ${n} shares. Updating stop to ${remaining}…`);
+
+        // 2. Replace the existing stop order with the reduced quantity (m - n)
+        const stopUpdatePayload = {
+            Quantity:  remaining.toString(),
+            OrderType: stopOrder.OrderType,
+            StopPrice: stopOrder.StopPrice || state.stopLoss.toFixed(2)
+        };
+
+        const stopRes = await fetch(
+            `https://api.tradestation.com/v3/orderexecution/orders/${stopOrder.OrderID}`,
+            {
+                method: 'PUT',
+                headers: {
+                    'Authorization': `Bearer ${tradeStationToken}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(stopUpdatePayload)
+            }
+        );
+        const stopData = await stopRes.json();
+        if (!stopRes.ok) {
+            setStatus(`Stop reduced: FAILED — ${stopData.Message || JSON.stringify(stopData)}`, '#f59e0b');
+        } else {
+            // Track the new partial limit order in the panel
+            const newOrderId = (limitData.Orders?.[0]?.OrderID) || limitData.OrderID;
+            if (newOrderId && !state.allOrderIds.includes(newOrderId)) {
+                state.allOrderIds.push(newOrderId);
+            }
+            // Record partial sell for chart annotation
+            if (!state.partialSells) state.partialSells = [];
+            state.partialSells.push({ price: limitPrice, qty: n, time: Date.now() });
+            setStatus(`Done — ${n} shares selling at $${limitPrice.toFixed(2)}, stop now covers ${remaining} shares.`, '#4ade80');
+            updatePanelMonitor(panelId, stateKey);
+        }
+    } catch (err) {
+        setStatus(`Error: ${err.message}`, '#f87171');
+    }
+}
+
+// -------------------------------------------------------------------
+// 13. CANCEL ALL ORDERS FOR A PANEL
 // -------------------------------------------------------------------
 async function cancelAllPanelOrders(panelId, stateKey) {
     const state = window[stateKey];
